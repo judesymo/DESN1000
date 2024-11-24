@@ -1,0 +1,108 @@
+// Pin definitions
+const int LEFT_MIC = A0;    // Left microphone
+const int RIGHT_MIC = A2;   // Right microphone
+const int PHOTO_SENSOR = A1;// Phototransistor
+const int LED_L = 7;        // Left LED
+const int LED_T = 8;        // Center LED
+const int LED_R = 9;        // Right LED
+
+// Thresholds (in volts)
+const float THRESHOLD = 0.14;  // 40% of max voltage for reliable detection
+const float MIN_VALID = 0.01;  // Minimum voltage to consider sensor working
+
+// Variable to track current LED state
+byte currentLED = 0;  // 0=none, 1=left, 2=center, 3=right
+
+void setup() {
+  pinMode(LED_L, OUTPUT);
+  pinMode(LED_T, OUTPUT);
+  pinMode(LED_R, OUTPUT);
+  Serial.begin(9600);  // For debugging
+}
+
+float getVoltage(int pin) {
+  return analogRead(pin) * (5.0 / 1023.0);
+}
+
+bool isSensorWorking(float voltage) {
+  return voltage >= MIN_VALID;
+}
+
+void setLED(byte newState) {
+  // Only change LEDs if the state has changed
+  if (newState != currentLED) {
+    // Turn off current LED
+    switch (currentLED) {
+      case 1: digitalWrite(LED_L, LOW); break;
+      case 2: digitalWrite(LED_T, LOW); break;
+      case 3: digitalWrite(LED_R, LOW); break;
+    }
+    
+    // Turn on new LED
+    switch (newState) {
+      case 1: digitalWrite(LED_L, HIGH); break;
+      case 2: digitalWrite(LED_T, HIGH); break;
+      case 3: digitalWrite(LED_R, HIGH); break;
+    }
+    
+    currentLED = newState;
+  }
+}
+
+void loop() {
+  // Read all sensors
+  float leftV = getVoltage(LEFT_MIC);
+  float rightV = getVoltage(RIGHT_MIC);
+  float photoV = getVoltage(PHOTO_SENSOR);
+  
+  // Case 1: Everything working normally
+  if (isSensorWorking(photoV) && isSensorWorking(leftV) && isSensorWorking(rightV)) {
+    if (photoV > THRESHOLD && abs(leftV - rightV) < 0.05) {
+      setLED(2);  // Center LED
+    }
+    else if (leftV > THRESHOLD && leftV > rightV) {
+      setLED(1);  // Left LED
+    }
+    else if (rightV > THRESHOLD && rightV > leftV) {
+      setLED(3);  // Right LED
+    }
+    else {
+      setLED(0);  // No LED
+    }
+  }
+  // Case 2: Phototransistor failed, use only mics
+  else if (isSensorWorking(leftV) && isSensorWorking(rightV)) {
+    if (leftV > THRESHOLD && leftV > rightV) {
+      setLED(1);  // Left LED
+    }
+    else if (rightV > THRESHOLD && rightV > leftV) {
+      setLED(3);  // Right LED
+    }
+    else if (abs(leftV - rightV) < 0.05 && (leftV > THRESHOLD || rightV > THRESHOLD)) {
+      setLED(2);  // Center LED
+    }
+    else {
+      setLED(0);  // No LED
+    }
+  }
+  // Case 3: One mic failed, use other mic and phototransistor
+  else if (isSensorWorking(photoV)) {
+    if (photoV > THRESHOLD) {
+      setLED(2);  // Center LED
+    }
+    else if (isSensorWorking(leftV) && leftV > THRESHOLD) {
+      setLED(1);  // Left LED
+    }
+    else if (isSensorWorking(rightV) && rightV > THRESHOLD) {
+      setLED(3);  // Right LED
+    }
+    else {
+      setLED(0);  // No LED
+    }
+  }
+  else {
+    setLED(0);  // No LED if not enough working sensors
+  }
+  
+  delay(50);  // Small delay to stabilize readings
+}
