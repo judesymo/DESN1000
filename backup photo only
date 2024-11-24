@@ -1,0 +1,75 @@
+// Pin definitions
+const int photoTransPin = A0;    // Phototransistor input pin
+const int leftVoltagePin = 9;    // Left voltage output pin
+const int rightVoltagePin = 10;  // Right voltage output pin
+const int centerVoltagePin = 11; // Center voltage output pin
+
+// Constants
+const int threshold = 100;        // Phototransistor threshold value
+const unsigned long detectionTime = 500; // Time in ms to detect center condition
+const int outputVoltage = 255;    // Maximum voltage output (using PWM)
+
+// Variables
+unsigned long lastDetectionTime = 0;
+bool isDetected = false;
+bool centerActivated = false;
+
+void setup() {
+  // Configure pins
+  pinMode(photoTransPin, INPUT);
+  pinMode(leftVoltagePin, OUTPUT);
+  pinMode(rightVoltagePin, OUTPUT);
+  pinMode(centerVoltagePin, OUTPUT);
+  
+  // Initialize serial for debugging
+  Serial.begin(9600);
+}
+
+void loop() {
+  // Read phototransistor value
+  int sensorValue = analogRead(photoTransPin);
+  
+  // Debug output
+  Serial.print("Sensor value: ");
+  Serial.println(sensorValue);
+  
+  // Check if phototransistor detects signal
+  if (sensorValue > threshold) {
+    if (!isDetected) {
+      // First detection
+      isDetected = true;
+      lastDetectionTime = millis();
+    }
+    
+    // Check if detection time threshold is met
+    if (millis() - lastDetectionTime >= detectionTime) {
+      // Activate center voltage
+      centerActivated = true;
+    }
+  } else {
+    // Reset detection status when signal is lost
+    isDetected = false;
+    lastDetectionTime = millis();
+  }
+  
+  // Control voltage outputs
+  if (centerActivated) {
+    // Center voltage active
+    analogWrite(leftVoltagePin, 0);
+    analogWrite(rightVoltagePin, 0);
+    analogWrite(centerVoltagePin, outputVoltage);
+  } else if (isDetected) {
+    // Right voltage active when signal detected
+    analogWrite(leftVoltagePin, 0);
+    analogWrite(rightVoltagePin, outputVoltage);
+    analogWrite(centerVoltagePin, 0);
+  } else {
+    // Left voltage active by default
+    analogWrite(leftVoltagePin, outputVoltage);
+    analogWrite(rightVoltagePin, 0);
+    analogWrite(centerVoltagePin, 0);
+  }
+  
+  // Small delay to prevent too rapid readings
+  delay(50);
+}
