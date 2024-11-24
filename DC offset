@@ -1,0 +1,146 @@
+// Pin definitions
+const int MIC_LEFT_PIN = A0;    // Left microphone input
+const int MIC_RIGHT_PIN = A2;   // Right microphone input
+const int PHOTO_PIN = A1;       // Phototransistor input
+const int LED_LEFT_PIN = 4;     // Left LED output
+const int LED_RIGHT_PIN = 2;    // Right LED output
+const int LED_CENTER_PIN = 3;   // Center LED output
+
+// Signal parameters
+const float MAX_VOLTAGE = 1.6;  // Maximum expected voltage
+const int MAX_ADC = (MAX_VOLTAGE * 1024) / 5.0;  // ~328 at 1.6V
+const int NOISE_FLOOR = 5;     // Increased for higher voltage range
+const int SAMPLE_SIZE_PHOTO = 100;  // More samples for high frequency
+const int SAMPLE_SIZE_SOUND = 50;   // Fewer samples needed for sound
+const int CALIB_SAMPLES = 100;      // Samples for offset calibration
+
+// Timing parameters (in microseconds)
+const int PHOTO_DELAY = 20;  // 20µs delay for 24400Hz signal
+const int SOUND_DELAY = 100; // 100µs delay for 1525Hz signal
+
+// Variables to store measurements
+int leftOffset, rightOffset, photoOffset;  // Dynamic DC offsets
+int leftPeak = 0;
+int rightPeak = 0;
+int photoPeak = 0;
+
+void setup() {
+  pinMode(LED_LEFT_PIN, OUTPUT);
+  pinMode(LED_RIGHT_PIN, OUTPUT);
+  pinMode(LED_CENTER_PIN, OUTPUT);
+  Serial.begin(9600);  // For debugging
+  
+  calibrateOffsets();
+}
+
+void loop() {
+  // Periodic recalibration
+  static unsigned long lastCalib = 0;
+  if (millis() - lastCalib > 30000) {
+    calibrateOffsets();
+    lastCalib = millis();
+  }
+
+  // Measure peaks with different sampling rates
+  measurePeaks();
+
+  // Turn off all LEDs initially
+  digitalWrite(LED_LEFT_PIN, LOW);
+  digitalWrite(LED_RIGHT_PIN, LOW);
+  digitalWrite(LED_CENTER_PIN, LOW);
+
+  // Signal detection with noise floor threshold
+  bool lightDetected = (photoPeak > NOISE_FLOOR);
+  bool leftSound = (leftPeak > NOISE_FLOOR);
+  bool rightSound = (rightPeak > NOISE_FLOOR);
+
+  // If any signal is above maximum expected voltage, ignore it
+  if (leftPeak > MAX_ADC || rightPeak > MAX_ADC || photoPeak > MAX_ADC) {
+    return;
+  }
+
+  // Determine direction based on microphone readings
+  if (leftSound && rightSound) {
+    // Calculate the difference between left and right signals
+    int difference = abs(leftPeak - rightPeak);
+    
+    // If signals are similar in strength (within 20% of each other)
+    if (difference < (max(leftPeak, rightPeak) * 0.2)) {
+      if (lightDetected) {
+        digitalWrite(LED_CENTER_PIN, HIGH);
+        // keep on signal for 1 second 
+        delay(1000);
+      }
+    }
+    // If significant difference, determine direction
+    else if (leftPeak > rightPeak) {
+      digitalWrite(LED_LEFT_PIN, HIGH);
+    } else {
+      digitalWrite(LED_RIGHT_PIN, HIGH);
+    }
+  }
+  // Single microphone detection
+  else if (leftSound) {
+    digitalWrite(LED_LEFT_PIN, HIGH);
+  }
+  else if (rightSound) {
+    digitalWrite(LED_RIGHT_PIN, HIGH);
+  }
+  // If only light is detected
+  else if (lightDetected) {
+    digitalWrite(LED_CENTER_PIN, HIGH);
+    // keep on signal for 1 second 
+    delay(1000);
+  }
+
+  delay(5); // Reduced main loop delay
+}
+
+void calibrateOffsets() {
+  long leftSum = 0, rightSum = 0, photoSum = 0;
+  
+  for (int i = 0; i < CALIB_SAMPLES; i++) {
+    leftSum += analogRead(MIC_LEFT_PIN);
+    rightSum += analogRead(MIC_RIGHT_PIN);
+    photoSum += analogRead(PHOTO_PIN);
+    delay(1);
+  }
+  
+  leftOffset = leftSum / CALIB_SAMPLES;
+  rightOffset = rightSum / CALIB_SAMPLES;
+  photoOffset = photoSum / CALIB_SAMPLES;
+}
+
+void measurePeaks() {
+  int maxLeft = -512, minLeft = 511;
+  int maxRight = -512, minRight = 511;
+  int maxPhoto = -512, minPhoto = 511;
+  
+  // First measure sound signals
+  for (int i = 0; i < SAMPLE_SIZE_SOUND; i++) {
+    int leftVal = analogRead(MIC_LEFT_PIN) - leftOffset;
+    int rightVal = analogRead(MIC_RIGHT_PIN) - rightOffset;
+    
+    maxLeft = max(maxLeft, leftVal);
+    minLeft = min(minLeft, leftVal);
+    maxRight = max(maxRight, rightVal);
+    minRight = min(minRight, rightVal);
+    
+    delayMicroseconds(SOUND_DELAY);
+  }
+
+  // Then measure photo signal with faster sampling
+  for (int i = 0; i < SAMPLE_SIZE_PHOTO; i++) {
+    int photoVal = analogRead(PHOTO_PIN) - photoOffset;
+    
+    maxPhoto = max(maxPhoto, photoVal);
+    minPhoto = min(minPhoto, photoVal);
+    
+    delayMicroseconds(PHOTO_DELAY);
+  }
+  
+  // Calculate peak-to-peak values
+  leftPeak = maxLeft - minLeft;
+  rightPeak = maxRight - minRight;
+  photoPeak = maxPhoto - minPhoto;
+}
