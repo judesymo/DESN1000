@@ -1,0 +1,196 @@
+// Pin definitions
+const int MIC_LEFT_PIN = A0;    // Left microphone input
+const int MIC_RIGHT_PIN = A2;   // Right microphone input
+const int PHOTO_PIN = A1;       // Phototransistor input
+const int DIR_LEFT_PIN = 4;     // Left direction output
+const int DIR_RIGHT_PIN = 2;    // Right direction output
+const int DIR_CENTER_PIN = 3;   // Center/stationary output
+
+// Signal parameters
+const float MAX_VOLTAGE = 1.6;  // Maximum expected voltage
+const int MAX_ADC = (MAX_VOLTAGE * 1024) / 5.0;  // ~328 at 1.6V
+const int NOISE_FLOOR = 10;     // Increased for higher voltage range
+const int SAMPLE_SIZE_PHOTO = 100;  // More samples for high frequency
+const int SAMPLE_SIZE_SOUND = 50;   // Fewer samples needed for sound
+const int CALIB_SAMPLES = 100;      // Samples for offset calibration
+
+// Timing parameters
+const int PHOTO_DELAY = 20;     // 20µs delay for 24400Hz signal
+const int SOUND_DELAY = 100;    // 100µs delay for 1525Hz signal
+const unsigned long MIN_STABLE_TIME = 500;   // Time needed on photo sensor to confirm stability (ms)
+const unsigned long CENTER_ON_TIME = 1000;   // Time to keep center output on (ms)
+
+// Variables to store measurements
+int leftOffset, rightOffset, photoOffset;  // Dynamic DC offsets
+int leftPeak = 0;
+int rightPeak = 0;
+int photoPeak = 0;
+
+// State tracking variables
+unsigned long photoStartTime = 0;
+bool photoWasDetected = false;
+unsigned long centerStartTime = 0;
+bool centerActive = false;
+bool lastPhotoState = false;    // For detecting transitions
+int currentDirection = 0;       // Direction determined by mics
+bool inOscillation = false;    // Flag for when we're in oscillation mode
+
+void setup() {
+  pinMode(DIR_LEFT_PIN, OUTPUT);
+  pinMode(DIR_RIGHT_PIN, OUTPUT);
+  pinMode(DIR_CENTER_PIN, OUTPUT);
+  Serial.begin(9600);  // For debugging
+  
+  calibrateOffsets();
+}
+
+void loop() {
+  // Periodic recalibration
+  static unsigned long lastCalib = 0;
+  if (millis() - lastCalib > 30000) {
+    calibrateOffsets();
+    lastCalib = millis();
+  }
+
+  // Measure peaks with different sampling rates
+  measurePeaks();
+
+  // Turn off all direction outputs initially
+  digitalWrite(DIR_LEFT_PIN, LOW);
+  digitalWrite(DIR_RIGHT_PIN, LOW);
+  
+  // Signal detection with noise floor threshold
+  bool lightDetected = (photoPeak > NOISE_FLOOR);
+
+  // If signal is above maximum expected voltage, ignore it
+  if (photoPeak > MAX_ADC) {
+    return;
+  }
+
+  // Handle center output timing
+  if (centerActive) {
+    if (millis() - centerStartTime >= CENTER_ON_TIME) {
+      digitalWrite(DIR_CENTER_PIN, LOW);
+      centerActive = false;
+      inOscillation = false;  // Reset oscillation state
+    } else {
+      digitalWrite(DIR_CENTER_PIN, HIGH);
+      return;  // Don't do anything else while center is active
+    }
+  }
+
+  // Determine direction from microphones if not in oscillation mode
+  if (!inOscillation) {
+    if (leftPeak > NOISE_FLOOR && rightPeak > NOISE_FLOOR) {
+      int difference = abs(leftPeak - rightPeak);
+      if (difference >= (max(leftPeak, rightPeak) * 0.2)) {
+        currentDirection = (leftPeak > rightPeak) ? -1 : 1;
+      }
+    } else if (leftPeak > NOISE_FLOOR) {
+      currentDirection = -1;
+    } else if (rightPeak > NOISE_FLOOR) {
+      currentDirection = 1;
+    }
+  }
+
+  // Handle phototransistor detection and oscillation
+  if (lightDetected) {
+    if (!photoWasDetected) {
+      // First detection or re-detection
+      photoStartTime = millis();
+      photoWasDetected = true;
+      if (!inOscillation) {
+        // Start oscillation with opposite of current direction
+        inOscillation = true;
+        currentDirection = -currentDirection;
+      } else {
+        // Already in oscillation, just reverse direction
+        currentDirection = -currentDirection;
+      }
+    }
+    
+    // Check if we've maintained position on the sensor
+    if (millis() - photoStartTime >= MIN_STABLE_TIME) {
+      // We've achieved stability - activate center output
+      digitalWrite(DIR_CENTER_PIN, HIGH);
+      centerActive = true;
+      centerStartTime = millis();
+      photoWasDetected = false;  // Reset for next cycle
+    }
+  } else {
+    // Lost photo detection
+    if (photoWasDetected) {
+      photoWasDetected = false;
+    }
+    
+    // Apply direction based on state
+    if (inOscillation) {
+      // Continue in current oscillation direction
+      if (currentDirection > 0) {
+        digitalWrite(DIR_RIGHT_PIN, HIGH);
+      } else {
+        digitalWrite(DIR_LEFT_PIN, HIGH);
+      }
+    } else {
+      // Normal operation based on mic inputs
+      if (currentDirection > 0) {
+        digitalWrite(DIR_RIGHT_PIN, HIGH);
+      } else if (currentDirection < 0) {
+        digitalWrite(DIR_LEFT_PIN, HIGH);
+      }
+    }
+  }
+
+  lastPhotoState = lightDetected;
+  delay(5); // Reduced main loop delay
+}
+
+// [calibrateOffsets and measurePeaks functions remain unchanged]
+void calibrateOffsets() {
+  long leftSum = 0, rightSum = 0, photoSum = 0;
+  
+  for (int i = 0; i < CALIB_SAMPLES; i++) {
+    leftSum += analogRead(MIC_LEFT_PIN);
+    rightSum += analogRead(MIC_RIGHT_PIN);
+    photoSum += analogRead(PHOTO_PIN);
+    delay(1);
+  }
+  
+  leftOffset = leftSum / CALIB_SAMPLES;
+  rightOffset = rightSum / CALIB_SAMPLES;
+  photoOffset = photoSum / CALIB_SAMPLES;
+}
+
+void measurePeaks() {
+  int maxLeft = -512, minLeft = 511;
+  int maxRight = -512, minRight = 511;
+  int maxPhoto = -512, minPhoto = 511;
+  
+  // First measure sound signals
+  for (int i = 0; i < SAMPLE_SIZE_SOUND; i++) {
+    int leftVal = analogRead(MIC_LEFT_PIN) - leftOffset;
+    int rightVal = analogRead(MIC_RIGHT_PIN) - rightOffset;
+    
+    maxLeft = max(maxLeft, leftVal);
+    minLeft = min(minLeft, leftVal);
+    maxRight = max(maxRight, rightVal);
+    minRight = min(minRight, rightVal);
+    
+    delayMicroseconds(SOUND_DELAY);
+  }
+
+  // Then measure photo signal with faster sampling
+  for (int i = 0; i < SAMPLE_SIZE_PHOTO; i++) {
+    int photoVal = analogRead(PHOTO_PIN) - photoOffset;
+    
+    maxPhoto = max(maxPhoto, photoVal);
+    minPhoto = min(minPhoto, photoVal);
+    
+    delayMicroseconds(PHOTO_DELAY);
+  }
+  
+  // Calculate peak-to-peak values
+  leftPeak = maxLeft - minLeft;
+  rightPeak = maxRight - minRight;
+  photoPeak = maxPhoto - minPhoto;
+}
